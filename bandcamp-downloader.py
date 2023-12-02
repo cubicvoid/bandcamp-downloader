@@ -363,9 +363,9 @@ def extension_from_type(_download_type : str, _format : str) -> str:
 
 def extension_from_response(_response : requests.Response):
     filename_match = FILENAME_REGEX.search(_response.headers['content-disposition'])
-    if filename_match:
-        return urllib.parse.unquote(filename_match.group(1))
-    return None
+    if not filename_match: return None
+    original_filename = urllib.parse.unquote(filename_match.group(1))
+    return os.path.splitext(original_filename)[1]
 
 def download_file(_url : str, _file_prefix : str, _expected_extension : str, _attempt : int = 1) -> None:
     if CONFIG['VERBOSE'] >= 2:
@@ -385,7 +385,7 @@ def download_file(_url : str, _file_prefix : str, _expected_extension : str, _at
             # already, but just in case the live download disagrees, prefer the
             # value we get from the URL response.
             extension = extension_from_response(response) or _expected_extension
-            file_path = os.path.join(CONFIG['OUTPUT_DIR'], _file_prefix + extension)
+            file_path = _file_prefix + extension
 
             if os.path.exists(file_path) and not CONFIG['FORCE']:
                 # This should be quite rare since we already screened existing files
