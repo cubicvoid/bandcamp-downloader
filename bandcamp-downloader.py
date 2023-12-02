@@ -362,7 +362,7 @@ def extension_from_type(_download_type : str, _format : str) -> str:
     return None
 
 def extension_from_response(_response : requests.Response):
-    filename_match = FILENAME_REGEX.search_(_response.headers['content-disposition'])
+    filename_match = FILENAME_REGEX.search(_response.headers['content-disposition'])
     if filename_match:
         return urllib.parse.unquote(filename_match.group(1))
     return None
