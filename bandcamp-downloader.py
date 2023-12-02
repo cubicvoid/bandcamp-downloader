@@ -194,20 +194,7 @@ def fetch_items(_url : str, _user_id : str, _last_token : str, _count : int) -> 
 
 def get_download_links_for_user(_user : str, _include_hidden : bool) -> [str]:
     print('Retrieving album links from user [{}]\'s collection.'.format(_user))
-
-    soup = BeautifulSoup(
-        requests.get(
-            USER_URL.format(_user),
-            cookies = get_cookies()
-        ).text,
-        'html.parser',
-        parse_only = SoupStrainer('div', id='pagedata'),
-    )
-    div = soup.find('div')
-    if not div:
-        print('ERROR: No div with pagedata found for user at url [{}]'.format(USER_URL.format(_user)))
-        return
-    data = json.loads(html.unescape(div.get('data-blob')))
+    data = pagedata_for_url(USER_URL.format(_user))
     if 'collection_count' not in data:
         print('ERROR: No collection info for user {}.\nPlease double check that your given username is correct.\nIt should be given exactly as it appears at the end of your bandcamp user url.\nFor example: bandcamp.com/user_name'.format(
             _user
@@ -247,35 +234,94 @@ def get_download_links_for_user(_user : str, _include_hidden : bool) -> [str]:
         
     return download_urls
 
+def file_prefix_from_download_item(_item : dict) -> str:
+    track_info = {key: _item[key] for key in TRACK_INFO_KEYS}
+    # Sanitize all input values for formatting
+    safe_track_info = {
+        key: (sanitize_filename(value) if type(value) == str else value) for key, value in track_info.items()
+    }
+    return os.path.join(
+        CONFIG['OUTPUT_DIR'],
+        CONFIG['FILENAME_FORMAT'].format(**safe_track_info))
+
+def pagedata_for_url(_url : str) -> dict:
+    soup = BeautifulSoup(
+        requests.get(
+            _url,
+            cookies = get_cookies()
+        ).text,
+        'html.parser',
+        parse_only = SoupStrainer('div', id='pagedata'),
+    )
+    div = soup.find('div')
+    if not div:
+        CONFIG['TQDM'].write('ERROR: No div with pagedata found for url [{}]'.format(_url))
+        return
+
+    return json.loads(html.unescape(div.get('data-blob')))
+
+# Check if a file already exists at the given path that matches the given
+# metadata size string.
+# _download_size, if nonempty, should be of the form "[num]MB" or "[num]GB"
+def download_exists(_file_path : str, _download_size : str) -> bool:
+    if not os.path.exists(_file_path):
+        return False
+    if CONFIG['FORCE']:
+        if CONFIG['VERBOSE']: CONFIG['TQDM'].write('--force flag was given. Overwriting existing file at [{}].'.format(_file_path))
+        return False
+    if not _download_size:
+        # This is rare but can happen, a few downloads have no size
+        # metadata -- to be safe, don't report that we already have
+        # the file if we can't verify the size.
+        if CONFIG['VERBOSE'] >= 3: CONFIG['TQDM'].write('Album at [{}] has no expected download size. Re-downloading.'.format(_file_path))
+        return False
+
+    actual_size = os.stat(_file_path).st_size
+    if _download_size.endswith("MB"):
+        actual_mb = actual_size / (1024 * 1024)
+        expected_mb = float(_download_size[:-2])
+        offset = abs(actual_mb - expected_mb)
+    elif _download_size.endswith("GB"):
+        # the field is called "size_mb" but it also uses GB
+        actual_gb = actual_size / (1024 * 1024 * 1024)
+        expected_gb = float(_download_size[:-2])
+        offset = abs(actual_gb - expected_gb)
+    else:
+        if CONFIG['VERBOSE'] >= 3: CONFIG['TQDM'].write('Album at [{}] has unrecognized expected download size [{}]. Re-downloading.'.format(_file_path, _download_size))
+        return False
+    # we should expect <= 0.05 but let's leave a little room for
+    # rounding imprecision
+    if offset < 0.06:
+        if CONFIG['VERBOSE'] >= 3: CONFIG['TQDM'].write('Skipping album that already exists: [{}]'.format(_file_path))
+        return True
+    if CONFIG['VERBOSE'] >= 2: CONFIG['TQDM'].write('Album at [{}] is the wrong size. Expected [{}] but was [{}]. Re-downloading.'.format(_file_path, _download_size, actual_size))
+    return False
+
+    
 def download_album(_album_url : str, _attempt : int = 1) -> None:
     try:
-        soup = BeautifulSoup(
-            requests.get(
-                _album_url,
-                cookies = get_cookies()
-            ).text,
-            'html.parser',
-            parse_only = SoupStrainer('div', id='pagedata'),
-        )
-        div = soup.find('div')
-        if not div:
-            CONFIG['TQDM'].write('ERROR: No div with pagedata found for album at url [{}]'.format(_album_url))
-            return
-
-        data = json.loads(html.unescape(div.get('data-blob')))
-        album = data['download_items'][0]['title']
-
-        if not 'downloads' in data['download_items'][0]:
+        data = pagedata_for_url(_album_url)
+        download_item = data['download_items'][0]
+        album = download_item['title']
+        file_prefix = file_prefix_from_download_item(download_item)
+        
+        if not 'downloads' in download_item:
             CONFIG['TQDM'].write('WARN: Album [{}] at url [{}] has no downloads available.'.format(album, _album_url))
             return
 
-        if not CONFIG['FORMAT'] in data['download_items'][0]['downloads']:
+        if not CONFIG['FORMAT'] in download_item['downloads']:
             CONFIG['TQDM'].write('WARN: Album [{}] at url [{}] does not have a download for format [{}].'.format(album, _album_url, CONFIG['FORMAT']))
             return
+        
+        extension = extension_from_type(download_item['download_type'], CONFIG['FORMAT']) or extension_from_url(download_url)
+        download = download_item['downloads'][CONFIG['FORMAT']] 
+        download_url = download['url']
+        download_size = download.get('size_mb', None)
 
-        download_url = data['download_items'][0]['downloads'][CONFIG['FORMAT']]['url']
-        track_info = {key: data['download_items'][0][key] for key in TRACK_INFO_KEYS}
-        download_file(download_url, track_info)
+        # Skip the actual download if we already have a file of the expected size or
+        # if this is a dry run
+        if not download_exists(file_prefix + extension, download_size):
+            download_file(download_url, file_prefix, extension)
     except IOError as e:
         if _attempt < CONFIG['MAX_URL_ATTEMPTS']:
             if CONFIG['VERBOSE'] >=2: CONFIG['TQDM'].write('WARN: I/O Error on attempt # [{}] to download the album at [{}]. Trying again...'.format(_attempt, _album_url))
@@ -291,7 +337,38 @@ def download_album(_album_url : str, _attempt : int = 1) -> None:
             CONFIG['TQDM'].update()
             time.sleep(CONFIG['POST_DOWNLOAD_WAIT'])
 
-def download_file(_url : str, _track_info : dict = None, _attempt : int = 1) -> None:
+extension_for_format = {
+    'aac-hi': '.m4a',
+    'aiff-lossless': '.aiff',
+    'alac': '.m4a',
+    'flac': '.flac',
+    'mp3-320': '.mp3',
+    'mp3-v0': '.mp3',
+    'vorbis': '.ogg',
+    'wav': '.wav'
+}
+
+def extension_from_url(_url : str) -> str:
+    filename = _url.split('/')[-1]
+    return os.path.splitext(filename)[1]
+
+def extension_from_type(_download_type : str, _format : str) -> str:
+    if _download_type == "a": return ".zip"
+    if _format in extension_for_format:
+        return extension_for_format[_format]
+    return None
+
+def extension_from_response(_response : requests.Response):
+    filename_match = FILENAME_REGEX.search_(_response.headers['content-disposition'])
+    if filename_match:
+        return urllib.parse.unquote(filename_match.group(1))
+    return None
+
+def download_file(_url : str, _file_prefix : str, _expected_extension : str, _attempt : int = 1) -> None:
+    if CONFIG['VERBOSE'] >= 2:
+        expected_path = _file_prefix + _expected_extension
+        CONFIG['TQDM'].write('Requesting download for destination [{}]'.format(expected_path))
+    if CONFIG['DRY_RUN']: return
     try:
         with requests.get(
                 _url,
@@ -301,30 +378,22 @@ def download_file(_url : str, _track_info : dict = None, _attempt : int = 1) -> 
             response.raise_for_status()
 
             expected_size = int(response.headers['content-length'])
-            filename_match = FILENAME_REGEX.search(response.headers['content-disposition'])
-            original_filename = urllib.parse.unquote(filename_match.group(1)) if filename_match else _url.split('/')[-1]
-            extension = os.path.splitext(original_filename)[1]
-            # Sanitize all input values for formatting
-            safe_track_info = {
-                key: (sanitize_filename(value) if type(value) == str else value) for key, value in _track_info.items()
-            } if _track_info else {}
-            filename = CONFIG['FILENAME_FORMAT'].format(**safe_track_info) + extension
-            file_path = os.path.join(CONFIG['OUTPUT_DIR'], filename)
+            # _expected_extension should always have the right file extension
+            # already, but just in case the live download disagrees, prefer the
+            # value we get from the URL response.
+            extension = extension_from_response(response) or _expected_extension
+            file_path = os.path.join(CONFIG['OUTPUT_DIR'], _file_prefix + extension)
 
-            if os.path.exists(file_path):
-                if CONFIG['FORCE']:
-                    if CONFIG['VERBOSE']: CONFIG['TQDM'].write('--force flag was given. Overwriting existing file at [{}].'.format(file_path))
-                else:
-                    actual_size = os.stat(file_path).st_size
-                    if expected_size == actual_size:
-                        if CONFIG['VERBOSE'] >= 3: CONFIG['TQDM'].write('Skipping album that already exists: [{}]'.format(file_path))
-                        return
-                    else:
-                        if CONFIG['VERBOSE'] >= 2: CONFIG['TQDM'].write('Album at [{}] is the wrong size. Expected [{}] but was [{}]. Re-downloading.'.format(file_path, expected_size, actual_size))
+            if os.path.exists(file_path) and not CONFIG['FORCE']:
+                # This should be quite rare since we already screened existing files
+                # against the album's size metadata, but check one last time if we
+                # already have a file of the right size
+                actual_size = os.stat(file_path).st_size
+                if expected_size == actual_size:
+                    if CONFIG['VERBOSE'] >= 3: CONFIG['TQDM'].write('Canceling download for album that already exists: [{}]'.format(file_path))
+                    return
 
             if CONFIG['VERBOSE'] >= 2: CONFIG['TQDM'].write('Album being saved to [{}]'.format(file_path))
-            if CONFIG['DRY_RUN']:
-                return
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             with open(file_path, 'wb') as fh:
                 for chunk in response.iter_content(chunk_size=8192):
@@ -336,7 +405,7 @@ def download_file(_url : str, _track_info : dict = None, _attempt : int = 1) -> 
         if _attempt < CONFIG['MAX_URL_ATTEMPTS']:
             if CONFIG['VERBOSE'] >=2: CONFIG['TQDM'].write('WARN: I/O Error on attempt # [{}] to download the file at [{}]. Trying again...'.format(_attempt, _url))
             time.sleep(CONFIG['URL_RETRY_WAIT'])
-            download_file(_url, _track_info, _attempt + 1)
+            download_file(_url, _file_prefix, _expected_extension, _attempt + 1)
         else:
             print_exception(e, 'An exception occurred trying to download file url [{}]:'.format(_url))
     except Exception as e:
