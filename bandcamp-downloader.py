@@ -195,7 +195,7 @@ def fetch_items(_url : str, _user_id : str, _last_token : str, _count : int) -> 
 def get_download_links_for_user(_user : str, _include_hidden : bool) -> [str]:
     print('Retrieving album links from user [{}]\'s collection.'.format(_user))
     data = pagedata_for_url(USER_URL.format(_user))
-    if 'collection_count' not in data:
+    if not data or 'collection_count' not in data:
         print('ERROR: No collection info for user {}.\nPlease double check that your given username is correct.\nIt should be given exactly as it appears at the end of your bandcamp user url.\nFor example: bandcamp.com/user_name'.format(
             _user
         ))
@@ -255,8 +255,7 @@ def pagedata_for_url(_url : str) -> dict:
     )
     div = soup.find('div')
     if not div:
-        CONFIG['TQDM'].write('ERROR: No div with pagedata found for url [{}]'.format(_url))
-        return
+        return None
 
     return json.loads(html.unescape(div.get('data-blob')))
 
@@ -301,6 +300,10 @@ def download_exists(_file_path : str, _download_size : str) -> bool:
 def download_album(_album_url : str, _attempt : int = 1) -> None:
     try:
         data = pagedata_for_url(_album_url)
+        if not data:
+            CONFIG['TQDM'].write('ERROR: No pagedata found for url [{}] (you might be rate-limited, try increasing --wait-after-download).'.format(_album_url))
+            return
+
         download_item = data['download_items'][0]
         album = download_item['title']
         file_prefix = file_prefix_from_download_item(download_item)
