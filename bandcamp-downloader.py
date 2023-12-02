@@ -286,7 +286,7 @@ def download_exists(_file_path : str, _download_size : str) -> bool:
         expected_gb = float(_download_size[:-2])
         offset = abs(actual_gb - expected_gb)
     else:
-        if CONFIG['VERBOSE'] >= 3: CONFIG['TQDM'].write('Album at [{}] has unrecognized expected download size [{}]. Re-downloading.'.format(_file_path, _download_size))
+        if CONFIG['VERBOSE'] >= 2: CONFIG['TQDM'].write('Album at [{}] has unrecognized expected download size [{}]. Re-downloading.'.format(_file_path, _download_size))
         return False
     # we should expect <= 0.05 but let's leave a little room for
     # rounding imprecision
@@ -368,7 +368,7 @@ def extension_from_response(_response : requests.Response):
     return os.path.splitext(original_filename)[1]
 
 def download_file(_url : str, _file_prefix : str, _expected_extension : str, _attempt : int = 1) -> None:
-    if CONFIG['VERBOSE'] >= 2:
+    if CONFIG['VERBOSE'] >= 3:
         expected_path = _file_prefix + _expected_extension
         CONFIG['TQDM'].write('Requesting download for destination [{}]'.format(expected_path))
     if CONFIG['DRY_RUN']: return
@@ -393,7 +393,7 @@ def download_file(_url : str, _file_prefix : str, _expected_extension : str, _at
                 # already have a file of the right size
                 actual_size = os.stat(file_path).st_size
                 if expected_size == actual_size:
-                    if CONFIG['VERBOSE'] >= 3: CONFIG['TQDM'].write('Canceling download for album that already exists: [{}]'.format(file_path))
+                    if CONFIG['VERBOSE'] >= 2: CONFIG['TQDM'].write('Canceling download that matches existing file: [{}]'.format(file_path))
                     return
 
             if CONFIG['VERBOSE'] >= 2: CONFIG['TQDM'].write('Album being saved to [{}]'.format(file_path))
