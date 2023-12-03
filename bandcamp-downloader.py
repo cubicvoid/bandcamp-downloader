@@ -272,7 +272,7 @@ def download_exists(_file_path : str, _download_size : str) -> bool:
         # This is rare but can happen, a few downloads have no size
         # metadata -- to be safe, don't report that we already have
         # the file if we can't verify the size.
-        if CONFIG['VERBOSE'] >= 3: CONFIG['TQDM'].write('Album at [{}] has no expected download size. Re-downloading.'.format(_file_path))
+        if CONFIG['VERBOSE'] >= 2: CONFIG['TQDM'].write('Album at [{}] has no expected download size. Re-downloading.'.format(_file_path))
         return False
 
     actual_size = os.stat(_file_path).st_size
@@ -288,9 +288,10 @@ def download_exists(_file_path : str, _download_size : str) -> bool:
     else:
         if CONFIG['VERBOSE'] >= 2: CONFIG['TQDM'].write('Album at [{}] has unrecognized expected download size [{}]. Re-downloading.'.format(_file_path, _download_size))
         return False
-    # we should expect <= 0.05 but let's leave a little room for
-    # rounding imprecision
-    if offset < 0.06:
+    # we should expect <= 0.05 since bandcamp always gives sizes to one
+    # decimal place, but sometimes the reported value is rounded in the wrong
+    # direction, so treat anything within 0.1 as a match.
+    if offset < 0.1:
         if CONFIG['VERBOSE'] >= 3: CONFIG['TQDM'].write('Skipping album that already exists: [{}]'.format(_file_path))
         return True
     if CONFIG['VERBOSE'] >= 2: CONFIG['TQDM'].write('Album at [{}] is the wrong size. Expected [{}] but was [{}]. Re-downloading.'.format(_file_path, _download_size, actual_size))
@@ -368,10 +369,11 @@ def extension_from_response(_response : requests.Response):
     return os.path.splitext(original_filename)[1]
 
 def download_file(_url : str, _file_prefix : str, _expected_extension : str, _attempt : int = 1) -> None:
-    if CONFIG['VERBOSE'] >= 3:
-        expected_path = _file_prefix + _expected_extension
-        CONFIG['TQDM'].write('Requesting download for destination [{}]'.format(expected_path))
-    if CONFIG['DRY_RUN']: return
+    if CONFIG['DRY_RUN']:
+        if CONFIG['VERBOSE'] >= 2:
+            expected_path = _file_prefix + _expected_extension
+            CONFIG['TQDM'].write('Dry run: skipping download for destination [{}]'.format(expected_path))
+        return
     try:
         with requests.get(
                 _url,
